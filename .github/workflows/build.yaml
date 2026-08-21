@@ -31,6 +31,8 @@ jobs:
         run: >
           pyinstaller --onefile --name PaymentScheduleApp
           --add-data "app_streamlit.py${{ matrix.os == 'windows-latest' && ';' || ':' }}."
+          --add-data "core.py${{ matrix.os == 'windows-latest' && ';' || ':' }}."
+          --add-data "assets${{ matrix.os == 'windows-latest' && ';' || ':' }}assets"
           --collect-all streamlit
           launcher.py
 
@@ -39,6 +41,8 @@ jobs:
         run: >
           pyinstaller --onefile --name PaymentScheduleApp
           --add-data "app_streamlit.py:."
+          --add-data "core.py:."
+          --add-data "assets:assets"
           --collect-all streamlit
           launcher.py
 
