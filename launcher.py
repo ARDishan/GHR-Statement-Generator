@@ -3,89 +3,86 @@ import sys
 import time
 import socket
 import webbrowser
-import threading
 import multiprocessing
+import threading
 
-import streamlit.web.cli as stcli
 
-
-def get_base_dir():
+def get_app_dir():
     """
-    Get the directory containing bundled files.
-
-    When running normally:
-        project directory
-
-    When running as PyInstaller executable:
-        temporary PyInstaller extraction directory
+    Returns the directory where bundled files are located.
     """
+
     if getattr(sys, "frozen", False):
+        # PyInstaller one-file executable
         return sys._MEIPASS
 
-    return os.path.dirname(
-        os.path.abspath(__file__)
-    )
-
-
-def get_executable_dir():
-    """
-    Get the directory where StatementGenerator.exe is located.
-    Useful for external assets such as assets/.
-    """
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(
-            os.path.abspath(sys.executable)
-        )
-
-    return os.path.dirname(
-        os.path.abspath(__file__)
-    )
+    # Running normally from Python
+    return os.path.dirname(os.path.abspath(__file__))
 
 
 def find_free_port(start=8501, tries=20):
+
     for port in range(start, start + tries):
-        with socket.socket(
-            socket.AF_INET,
-            socket.SOCK_STREAM
-        ) as s:
-            if s.connect_ex(
-                ("127.0.0.1", port)
-            ) != 0:
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+
+            if s.connect_ex(("127.0.0.1", port)) != 0:
                 return port
 
     return start
 
 
 def open_browser(url):
-    time.sleep(2.5)
+
+    # Give Streamlit a moment to start
+    time.sleep(3)
+
     webbrowser.open(url)
 
 
 def main():
 
-    multiprocessing.freeze_support()
-
-    base_dir = get_base_dir()
+    app_dir = get_app_dir()
 
     app_file = os.path.join(
-        base_dir,
+        app_dir,
         "app_streamlit.py"
     )
 
-    if not os.path.exists(app_file):
+    # --------------------------------------------------------
+    # Check Streamlit application
+    # --------------------------------------------------------
+
+    if not os.path.isfile(app_file):
+
         raise FileNotFoundError(
-            f"Streamlit application not found:\n{app_file}"
+            "Streamlit application not found:\n"
+            + app_file
         )
+
+    # --------------------------------------------------------
+    # Find free port
+    # --------------------------------------------------------
 
     port = find_free_port()
 
-    url = f"http://127.0.0.1:{port}"
+    url = f"http://localhost:{port}"
+
+    # --------------------------------------------------------
+    # Start browser
+    # --------------------------------------------------------
 
     threading.Thread(
         target=open_browser,
         args=(url,),
         daemon=True
     ).start()
+
+    # --------------------------------------------------------
+    # Start Streamlit
+    # --------------------------------------------------------
+
+    import streamlit.web.cli as stcli
 
     sys.argv = [
         "streamlit",
@@ -96,9 +93,6 @@ def main():
 
         "--server.port",
         str(port),
-
-        "--server.address",
-        "127.0.0.1",
 
         "--server.headless=true",
 
@@ -112,6 +106,6 @@ def main():
         stcli.main()
     )
 
-
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()
