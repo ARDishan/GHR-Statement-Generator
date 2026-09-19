@@ -3,3 +3,5 @@
 Statement Generator.spec
 /__pycache__
 /.streamlit
+/.vscode
+.env

@@ -29,6 +29,9 @@ import secrets
 from io import BytesIO
 
 import pandas as pd
+from sqlalchemy import text
+
+from db import get_engine
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
@@ -136,6 +139,7 @@ REQUIRED_COLS = [
     "BRANCH",
     "PROJECT",
     "CUSTOMER",
+    "PHONE NO",
     "Unit REF ID",
     "S NO",
     "INSTALLMENT NO",
@@ -433,31 +437,26 @@ def generate_random_hash(value=""):
 
 def get_pdf_filename(row):
     """
-    Determine PDF filename.
+    Determine PDF filename — this should equal the payment_schedule
+    table's FILE NAME column exactly (just sanitized for the filesystem
+    and given a .pdf extension), so a customer/unit's PDF is always
+    named the same thing no matter how many times it's regenerated.
 
     Priority:
 
-    1. Excel 'File Name' column
-    2. UNIT REF ID + 10-character hash
-    3. customer + hash
-
-    Example:
-
-        EBR/F04/Unit 1
-
-    becomes:
-
-        EBR_F04_Unit_1_3732612f13.pdf
+    1. "FILE NAME" column (from payment_schedule / Excel)
+    2. Unit REF ID (fallback if FILE NAME is missing)
+    3. CUSTOMER (last resort)
 
     Note:
     Windows does not allow '/' in filenames, so '/' is
     converted to '_'.
     """
 
-    if "File Name" in row.index:
+    if "FILE NAME" in row.index:
 
         file_name = clean_value(
-            row["File Name"]
+            row["FILE NAME"]
         )
 
         if file_name:
@@ -482,17 +481,8 @@ def get_pdf_filename(row):
 
     if unit_ref:
 
-        unit_part = safe_filename(
-            unit_ref
-        )
-
-        random_hash = generate_random_hash(
-            unit_ref
-        )
-
         return (
-            f"{unit_part}_"
-            f"{random_hash}.pdf"
+            f"{safe_filename(unit_ref)}.pdf"
         )
 
     customer = clean_value(
@@ -502,13 +492,8 @@ def get_pdf_filename(row):
         )
     )
 
-    random_hash = generate_random_hash(
-        customer
-    )
-
     return (
-        f"{safe_filename(customer)}_"
-        f"{random_hash}.pdf"
+        f"{safe_filename(customer)}.pdf"
     )
 
 
@@ -1346,14 +1331,22 @@ def load_excel(excel_source):
 
 def build_story(
     customer,
-    cust_df
+    unit_ref,
+    unit_df
 ):
     """
-    Build ReportLab story for one customer.
+    Build ReportLab story for ONE unit belonging to one customer.
+
+    unit_df contains only the installment rows for this single
+    Unit REF ID (one PDF is generated per unit, not per customer).
     """
 
     branch = clean_value(
-        cust_df["BRANCH"].iloc[0]
+        unit_df["BRANCH"].iloc[0]
+    )
+
+    project = clean_value(
+        unit_df["PROJECT"].iloc[0]
     )
 
     story = []
@@ -1406,48 +1399,38 @@ def build_story(
     )
 
     # --------------------------------------------------------
-    # Unit sections
+    # Customer / Unit / Project block
     # --------------------------------------------------------
 
-    for unit_ref, unit_df in cust_df.groupby(
-        "Unit REF ID",
-        sort=False
-    ):
-
-        project = clean_value(
-            unit_df["PROJECT"].iloc[0]
+    story.append(
+        build_info_block(
+            customer,
+            unit_ref,
+            project
         )
+    )
 
-        # Customer / Unit / Project
-        story.append(
-            build_info_block(
-                customer,
-                unit_ref,
-                project
-            )
+    # Space between PROJECT and grid
+    story.append(
+        Spacer(
+            1,
+            14
         )
+    )
 
-        # Space between PROJECT and grid
-        story.append(
-            Spacer(
-                1,
-                14
-            )
+    # Installment grid
+    story.append(
+        build_installment_table(
+            unit_df
         )
+    )
 
-        # Installment grid
-        story.append(
-            build_installment_table(
-                unit_df
-            )
+    story.append(
+        Spacer(
+            1,
+            18
         )
-
-        story.append(
-            Spacer(
-                1,
-                18
-            )
-        )
+    )
 
     # --------------------------------------------------------
     # Footer
@@ -1491,12 +1474,14 @@ def build_story(
 # GENERATE SINGLE PDF TO BYTES
 # ============================================================
 
-def generate_customer_pdf(
+def generate_unit_pdf(
     customer,
-    cust_df
+    unit_ref,
+    unit_df
 ):
     """
-    Generate one customer's PDF and return bytes.
+    Generate one unit's PDF (one customer may have several of these,
+    one per Unit REF ID) and return bytes.
     """
 
     buffer = BytesIO()
@@ -1512,13 +1497,14 @@ def generate_customer_pdf(
 
         title=(
             f"Payment Schedule - "
-            f"{customer}"
+            f"{customer} - {unit_ref}"
         ),
     )
 
     story = build_story(
         customer,
-        cust_df
+        unit_ref,
+        unit_df
     )
 
     doc.build(
@@ -1562,22 +1548,22 @@ def generate_pdfs(
 
     generated_files = []
 
-    customer_groups = list(
+    unit_groups = list(
         df.groupby(
-            "CUSTOMER",
+            ["CUSTOMER", "Unit REF ID"],
             sort=False
         )
     )
 
     total = len(
-        customer_groups
+        unit_groups
     )
 
     for index, (
-        customer,
-        cust_df
+        (customer, unit_ref),
+        unit_df
     ) in enumerate(
-        customer_groups,
+        unit_groups,
         start=1
     ):
 
@@ -1593,13 +1579,14 @@ def generate_pdfs(
         )
 
         # Generate bytes
-        pdf_bytes = generate_customer_pdf(
+        pdf_bytes = generate_unit_pdf(
             customer,
-            cust_df
+            unit_ref,
+            unit_df
         )
 
         # Determine filename from first row
-        first_row = cust_df.iloc[0]
+        first_row = unit_df.iloc[0]
 
         filename = get_pdf_filename(
             first_row
@@ -1642,45 +1629,50 @@ def generate_pdfs(
 # GENERATE PDFs IN MEMORY
 # ============================================================
 
-def generate_pdfs_in_memory(
-    excel_source,
+def generate_pdfs_in_memory_from_df(
+    df,
     progress_fn=None
 ):
     """
-    Generate PDFs in memory.
+    Generate PDFs in memory — one PDF per unit (Unit REF ID).
 
-    Used by Streamlit.
+    Works with a DataFrame from either load_excel() or load_from_db(),
+    since both return the same column shape.
 
-    Returns:
+    Returns a list of dicts, one per generated PDF:
 
         [
-            (filename, pdf_bytes),
+            {
+                "filename": "...",
+                "pdf_bytes": b"...",
+                "customer": "...",
+                "unit_ref_id": "...",
+                "project": "...",
+                "branch": "...",
+                "phone_no": "...",
+            },
             ...
         ]
     """
 
-    df = load_excel(
-        excel_source
-    )
-
     results = []
 
-    customer_groups = list(
+    unit_groups = list(
         df.groupby(
-            "CUSTOMER",
+            ["CUSTOMER", "Unit REF ID"],
             sort=False
         )
     )
 
     total = len(
-        customer_groups
+        unit_groups
     )
 
     for index, (
-        customer,
-        cust_df
+        (customer, unit_ref),
+        unit_df
     ) in enumerate(
-        customer_groups,
+        unit_groups,
         start=1
     ):
 
@@ -1688,21 +1680,26 @@ def generate_pdfs_in_memory(
             customer
         )
 
-        pdf_bytes = generate_customer_pdf(
-            customer,
-            cust_df
+        unit_ref = clean_value(
+            unit_ref
         )
 
-        first_row = cust_df.iloc[0]
+        pdf_bytes = generate_unit_pdf(
+            customer,
+            unit_ref,
+            unit_df
+        )
+
+        first_row = unit_df.iloc[0]
 
         filename = get_pdf_filename(
             first_row
         )
 
-        # Ensure names inside ZIP are unique
+        # Ensure names inside a single ZIP/batch are unique
         existing_names = {
-            name
-            for name, _ in results
+            r["filename"]
+            for r in results
         }
 
         filename = make_unique_filename(
@@ -1711,10 +1708,15 @@ def generate_pdfs_in_memory(
         )
 
         results.append(
-            (
-                filename,
-                pdf_bytes
-            )
+            {
+                "filename": filename,
+                "pdf_bytes": pdf_bytes,
+                "customer": customer,
+                "unit_ref_id": unit_ref,
+                "project": clean_value(first_row.get("PROJECT", "")),
+                "branch": clean_value(first_row.get("BRANCH", "")),
+                "phone_no": clean_value(first_row.get("PHONE NO", "")),
+            }
         )
 
         if progress_fn:
@@ -1726,6 +1728,229 @@ def generate_pdfs_in_memory(
             )
 
     return results
+
+
+def generate_pdfs_in_memory(
+    excel_source,
+    progress_fn=None
+):
+    """
+    Backward-compatible wrapper: load an Excel source, then generate.
+
+    Used by Streamlit's "Excel upload" flow.
+
+    Returns the same list-of-dicts shape as generate_pdfs_in_memory_from_df.
+    """
+
+    df = load_excel(
+        excel_source
+    )
+
+    return generate_pdfs_in_memory_from_df(
+        df,
+        progress_fn=progress_fn
+    )
+
+
+# ============================================================
+# DATABASE LOADING (replaces Excel as the data source)
+# ============================================================
+
+def load_from_db(engine=None, query=None, params=None):
+    """
+    Pull payment schedule rows from Postgres into the same
+    shape load_excel() produces.
+
+    engine: SQLAlchemy engine. If None, db.get_engine() is used.
+    query:  optional custom SQL (e.g. filtered by month/branch).
+    params: optional dict of query parameters.
+    """
+
+    if engine is None:
+        engine = get_engine()
+
+    if query is None:
+        query = """
+            SELECT
+                branch          AS "BRANCH",
+                project         AS "PROJECT",
+                customer        AS "CUSTOMER",
+                phone_no        AS "PHONE NO",
+                unit_ref_id     AS "Unit REF ID",
+                s_no            AS "S NO",
+                installment_no  AS "INSTALLMENT NO",
+                installment_amt AS "INSTALLMENT AMT",
+                due_date        AS "DUE DATE",
+                paid_amt        AS "PAID AMT",
+                outstanding     AS "OUTSTANDING",
+                file_name       AS "FILE NAME"
+            FROM payment_schedule
+            ORDER BY customer, unit_ref_id, s_no
+        """
+
+    df = pd.read_sql(
+        query,
+        engine,
+        params=params
+    )
+
+    missing = [
+        c
+        for c in REQUIRED_COLS
+        if c not in df.columns
+    ]
+
+    if missing:
+        raise ValueError(
+            "Missing required column(s) from DB query: "
+            + ", ".join(missing)
+        )
+
+    df["DUE DATE"] = pd.to_datetime(
+        df["DUE DATE"],
+        errors="coerce"
+    )
+
+    return df
+
+
+# ============================================================
+# SAVE GENERATED PDFs TO DB (for the notification service to pick up)
+# ============================================================
+
+def save_documents_to_db(results, month_folder, engine=None, document_type="payment_schedule"):
+    """
+    Insert/update generated_documents rows so the separate
+    Notification Service app can find these PDFs without any
+    shared folder or filename matching.
+
+    results: the list of dicts returned by generate_pdfs_in_memory_from_df.
+    month_folder: e.g. "2026-08" — also used as the Google Drive subfolder.
+    document_type: lets the same table hold other document kinds later
+        (e.g. "welcome_letter", "offer_letter") without a new table —
+        this app currently only produces "payment_schedule" documents.
+
+    Re-running for the same (customer, unit_ref_id, month_folder, document_type)
+    updates the existing row and clears any previous drive_file_id/uploaded_at,
+    so a re-generated PDF gets re-uploaded on the next notification run.
+    """
+
+    if engine is None:
+        engine = get_engine()
+
+    with engine.begin() as conn:
+
+        for r in results:
+
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO generated_documents
+                        (branch, project, customer, unit_ref_id, phone_no,
+                         document_type, pdf_filename, pdf_data, month_folder)
+                    VALUES
+                        (:branch, :project, :customer, :unit_ref_id, :phone_no,
+                         :document_type, :pdf_filename, :pdf_data, :month_folder)
+                    ON CONFLICT (customer, unit_ref_id, month_folder, document_type)
+                    DO UPDATE SET
+                        branch = EXCLUDED.branch,
+                        project = EXCLUDED.project,
+                        phone_no = EXCLUDED.phone_no,
+                        pdf_filename = EXCLUDED.pdf_filename,
+                        pdf_data = EXCLUDED.pdf_data,
+                        generated_at = now(),
+                        drive_file_id = NULL,
+                        drive_web_url = NULL,
+                        uploaded_at = NULL
+                    """
+                ),
+                {
+                    "branch": r["branch"],
+                    "project": r["project"],
+                    "customer": r["customer"],
+                    "unit_ref_id": r["unit_ref_id"],
+                    "phone_no": r["phone_no"],
+                    "document_type": document_type,
+                    "pdf_filename": r["filename"],
+                    "pdf_data": r["pdf_bytes"],
+                    "month_folder": month_folder,
+                },
+            )
+
+
+def find_existing_document_keys(month_folder, document_type, engine=None):
+    """
+    Return a set of (customer, unit_ref_id) tuples that already have a
+    generated_documents row for this month_folder + document_type.
+
+    Used to avoid re-saving (and therefore re-uploading/re-notifying)
+    units that were already published for this exact month and type —
+    the main lever for controlling duplicate PDF generation.
+    """
+
+    if engine is None:
+        engine = get_engine()
+
+    query = text(
+        """
+        SELECT customer, unit_ref_id
+        FROM generated_documents
+        WHERE month_folder = :month_folder
+          AND document_type = :document_type
+        """
+    )
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            query,
+            {"month_folder": month_folder, "document_type": document_type},
+        ).fetchall()
+
+    return {(r[0], r[1]) for r in rows}
+
+
+def mark_documents_uploaded(uploads, engine=None):
+    """
+    Record Google Drive upload results on generated_documents rows,
+    right after generation — so the Notification Service later finds
+    them already uploaded and just sends the SMS.
+
+    uploads: list of dicts, one per uploaded PDF:
+        {
+            "customer": ..., "unit_ref_id": ..., "month_folder": ...,
+            "document_type": ..., "drive_file_id": ..., "drive_web_url": ...,
+        }
+    """
+
+    if engine is None:
+        engine = get_engine()
+
+    with engine.begin() as conn:
+
+        for u in uploads:
+
+            conn.execute(
+                text(
+                    """
+                    UPDATE generated_documents
+                    SET drive_file_id = :drive_file_id,
+                        drive_web_url = :drive_web_url,
+                        uploaded_at = now()
+                    WHERE customer = :customer
+                      AND unit_ref_id = :unit_ref_id
+                      AND month_folder = :month_folder
+                      AND document_type = :document_type
+                    """
+                ),
+                {
+                    "drive_file_id": u["drive_file_id"],
+                    "drive_web_url": u["drive_web_url"],
+                    "customer": u["customer"],
+                    "unit_ref_id": u["unit_ref_id"],
+                    "month_folder": u["month_folder"],
+                    "document_type": u["document_type"],
+                },
+            )
 
 
 # ============================================================
