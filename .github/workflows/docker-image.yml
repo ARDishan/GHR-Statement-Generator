@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: Build and Deploy Docker Image
 
 on:
   push:
@@ -12,6 +12,7 @@ env:
   IMAGE_NAME: ardishan/ghr-statement-generator
 
 jobs:
+
   build:
     runs-on: ubuntu-latest
 
@@ -20,6 +21,7 @@ jobs:
       packages: write
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -47,3 +49,30 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  deploy:
+    needs: build
+    runs-on: self-hosted
+
+    steps:
+
+      - name: Deploy Statement Generator
+        run: |
+          cd /opt/apps/GHR-Statement-Generator
+
+          echo "Pulling latest Docker image..."
+          docker compose pull
+
+          echo "Starting updated container..."
+          docker compose up -d
+
+          echo "Waiting for container..."
+          sleep 10
+
+          echo "Container status:"
+          docker compose ps
+
+          echo "Checking application health..."
+          curl --fail http://localhost:8501/_stcore/health
+
+          echo "Deployment successful!"
