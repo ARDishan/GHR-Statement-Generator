@@ -66,13 +66,27 @@ jobs:
           echo "Starting updated container..."
           docker compose up -d
 
-          echo "Waiting for container..."
-          sleep 10
+          echo "Waiting for container to become healthy..."
 
-          echo "Container status:"
-          docker compose ps
+          for i in {1..30}; do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' statement-generator 2>/dev/null || echo "starting")
 
-          echo "Checking application health..."
-          curl --fail http://localhost:8501/_stcore/health
+            echo "Health status: $STATUS"
 
-          echo "Deployment successful!"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Deployment successful!"
+              exit 0
+            fi
+
+            if [ "$STATUS" = "unhealthy" ]; then
+              echo "Container became unhealthy."
+              docker compose logs --tail=100
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          echo "Container did not become healthy within 60 seconds."
+          docker compose logs --tail=100
+          exit 1
