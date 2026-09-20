@@ -1,0 +1,20 @@
+services:
+
+  statement-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: statement-generator
+    restart: unless-stopped
+    # Bind mount, not just COPY at build time: git-pulling new code here
+    # and restarting the container picks it up immediately — no rebuild
+    # needed unless requirements.txt changed.
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    ports:
+      # Reachable over the tailnet AND the internal LAN — nothing else,
+      # since Docker only listens on the exact IPs given below (not 0.0.0.0).
+      - "${TAILSCALE_IP}:8501:8501"
+      - "${LAN_IP}:8501:8501"
