@@ -52,41 +52,43 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    concurrency:
+      group: production-deploy-statement
+      cancel-in-progress: false
+
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_CLIENT_ID }}
+          audience: ${{ secrets.TAILSCALE_AUDIENCE }}
+          tags: tag:ci
+
+      - name: Configure SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/production_deploy
+          chmod 600 ~/.ssh/production_deploy
 
       - name: Deploy Statement Generator
+        timeout-minutes: 8
         run: |
-          cd /opt/apps/GHR-Statement-Generator
-
-          echo "Pulling latest Docker image..."
-          docker compose pull
-
-          echo "Starting updated container..."
-          docker compose up -d
-
-          echo "Waiting for container to become healthy..."
-
-          for i in {1..30}; do
-            STATUS=$(docker inspect --format='{{.State.Health.Status}}' statement-generator 2>/dev/null || echo "starting")
-
-            echo "Health status: $STATUS"
-
-            if [ "$STATUS" = "healthy" ]; then
-              echo "Deployment successful!"
-              exit 0
-            fi
-
-            if [ "$STATUS" = "unhealthy" ]; then
-              echo "Container became unhealthy."
-              docker compose logs --tail=100
-              exit 1
-            fi
-
-            sleep 2
-          done
-
-          echo "Container did not become healthy within 60 seconds."
-          docker compose logs --tail=100
-          exit 1
+          ssh -T \
+            -i ~/.ssh/production_deploy \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            deploy@${{ secrets.PRODUCTION_DEPLOY_HOST }} \
+            'sudo -n /usr/local/lib/production-deploy/statement-generator.sh'
