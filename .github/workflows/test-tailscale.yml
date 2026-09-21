@@ -30,7 +30,7 @@ jobs:
       - name: Test SSH port
         run: |
           nc -vz ubuntu-server 22
-          
+
       - name: Configure SSH key
         env:
           SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_DEPLOY_SSH_KEY }}
@@ -47,3 +47,12 @@ jobs:
             -o UserKnownHostsFile=/dev/null \
             deploy@${{ secrets.PRODUCTION_DEPLOY_HOST }} \
             'id && whoami && hostname'
+
+      - name: Deploy Statement Generator
+        run: |
+          ssh \
+            -i ~/.ssh/production_deploy \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            deploy@${{ secrets.PRODUCTION_DEPLOY_HOST }} \
+            'sudo -n /usr/local/lib/production-deploy/statement-generator.sh'
