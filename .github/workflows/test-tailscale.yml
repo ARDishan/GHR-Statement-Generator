@@ -1,0 +1,32 @@
+name: Test Tailscale Connection
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-tailscale:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_CLIENT_ID }}
+          audience: ${{ secrets.TAILSCALE_AUDIENCE }}
+          tags: tag:ci
+
+      - name: Show Tailscale status
+        run: |
+          tailscale status
+
+      - name: Test Ubuntu Server
+        run: |
+          tailscale ping ubuntu-server
+
+      - name: Test SSH port
+        run: |
+          nc -vz ubuntu-server 22
